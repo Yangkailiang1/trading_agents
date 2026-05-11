@@ -19,7 +19,7 @@ const actionLabels: Record<string, string> = {
 const AGENT_COLORS: Record<string, string> = {
   bull: '#4CAF50',
   bear: '#F44336',
-  tech: '#2196F3',
+  fundamental: '#2196F3',
   risk: '#FF9800',
 }
 

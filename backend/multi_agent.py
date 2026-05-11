@@ -2,7 +2,7 @@
 多智能体辩论交易决策系统
 
 架构：5个智能体，2阶段决策
-- 阶段1（并行）：多头、空头、技术、风控 4个分析师各自独立分析
+- 阶段1（并行）：多头、空头、基本面、风控 4个分析师各自独立分析
 - 阶段2（串行）：主席汇总所有意见，做出最终裁决
 
 每个智能体有独立的System Prompt和分析视角，
@@ -20,17 +20,19 @@ from enum import Enum
 
 import httpx
 
+from fundamental_fetcher import fetch_fundamental_data, format_fundamental_for_prompt
+
 logger = logging.getLogger(__name__)
 
 
 # ─── 智能体角色定义 ─────────────────────────────────────────
 
 class AgentRole(str, Enum):
-    BULL = "bull"          # 多头分析师
-    BEAR = "bear"          # 空头分析师
-    TECH = "tech"          # 技术分析师
-    RISK = "risk"          # 风控经理
-    MODERATOR = "moderator"  # 决策主席
+    BULL = "bull"              # 多头分析师
+    BEAR = "bear"              # 空头分析师
+    FUNDAMENTAL = "fundamental"  # 基本面分析师
+    RISK = "risk"              # 风控经理
+    MODERATOR = "moderator"    # 决策主席
 
 
 AGENT_CONFIG = {
@@ -74,25 +76,33 @@ AGENT_CONFIG = {
 - 如果有持仓且发现风险，你需要给出具体的卖出数量建议
 - 保护本金安全是你的首要原则""",
     },
-    AgentRole.TECH: {
-        "name": "tech",
-        "role_cn": "技术分析师",
-        "icon": "📊",
+    AgentRole.FUNDAMENTAL: {
+        "name": "fundamental",
+        "role_cn": "基本面分析师",
+        "icon": "📋",
         "color": "#2196F3",
-        "system_prompt": """你是「技术分析师」，你的职责是基于纯技术面进行客观分析。
+        "system_prompt": """你是「基本面分析师」，你的职责是基于公司基本面数据进行客观分析。
+
+你将收到该公司的以下基本面数据：
+- 公司基本信息（行业、市值、股本等）
+- 最新财务数据（净利润、营收、ROE、每股收益、现金流、资产负债率等）
+- 最近资金流向（主力/超大单/大单净流入流出）
+- 东方财富综合评分
 
 你的分析视角：
-1. 价格形态：趋势方向、支撑压力位、K线组合形态
-2. 量价关系：成交量变化与价格走势的配合
-3. 动量指标：涨跌幅变化速率、连续涨跌天数
-4. 均线系统：短期均线与长期均线的关系（用价格数据近似判断）
-5. 波动率：近期价格波动幅度
+1. 财务健康度：营收和利润增长趋势、ROE水平、现金流是否健康
+2. 估值水平：结合市值、每股收益、每股净资产判断是否高估/低估
+3. 资金面：主力资金是流入还是流出，持续性和强度如何
+4. 行业地位：公司在行业中的位置、竞争优势
+5. 评分趋势：综合评分是上升还是下降
 
-注意：
+分析原则：
+- 基本面向好 + 资金流入 → 看多
+- 基本面恶化 + 资金流出 → 看空
+- 基本面稳健但无亮点 → 中性
 - 你必须客观中立，不偏向多头或空头
-- 只基于技术数据给出分析结论
-- 如果技术面不明确，给出HOLD
-- 你的分析应该包含关键的技术位说明""",
+- 如果基本面数据不明确，给出HOLD
+- 你的分析应该引用具体的财务指标数据""",
     },
     AgentRole.RISK: {
         "name": "risk",
@@ -130,12 +140,12 @@ AGENT_CONFIG = {
 你将收到以下信息：
 1. 多头分析师的意见（看多视角）
 2. 空头分析师的意见（看空视角）
-3. 技术分析师的意见（中性技术面）
+3. 基本面分析师的意见（基于公司财务和资金面的客观分析）
 4. 风控经理的意见（风险控制）
 
 你的裁决原则：
 1. 综合考虑所有分析师的意见和置信度
-2. 当多头和空头意见对立时，技术分析师和风控经理的意见更具参考价值
+2. 当多头和空头意见对立时，基本面分析师和风控经理的意见更具参考价值
 3. 置信度更高的意见权重更大
 4. 风控经理的减仓/止损建议具有一票否决权（如果风控明确要求止损，必须执行）
 5. 如果没有明确方向，默认HOLD
@@ -173,6 +183,7 @@ class Agent:
         cash: float,
         position_qty: int,
         position_avg_cost: float,
+        fundamental_text: str = "",
     ) -> str:
         """构建分析师的user prompt"""
         history_str = ""
@@ -192,6 +203,16 @@ class Agent:
             cash_ratio = cash / total_estimate * 100 if total_estimate > 0 else 0
             total_assets_hint = f"\n- 持仓市值: ¥{position_value:.2f} (占总资产{position_ratio:.1f}%)\n- 现金占比: {cash_ratio:.1f}%"
 
+        # 基本面数据区块（仅基本面分析师使用，其他分析师也可参考简要信息）
+        fundamental_section = ""
+        if fundamental_text:
+            if self.role == AgentRole.FUNDAMENTAL:
+                # 基本面分析师获得完整数据
+                fundamental_section = f"\n## 基本面数据\n{fundamental_text}\n"
+            else:
+                # 其他分析师获得简要摘要
+                fundamental_section = f"\n## 基本面简要\n（详细基本面数据已提供给基本面分析师，你可根据需要参考以下信息）\n{fundamental_text}\n"
+
         return f"""## 当前任务
 请从你的专业视角分析以下股票数据并给出意见。
 
@@ -202,7 +223,7 @@ class Agent:
 
 ## 最近价格走势
 {history_str if history_str else "  暂无历史数据"}
-
+{fundamental_section}
 ## 账户状态
 - 可用现金: ¥{cash:.2f}
 - 持仓: {position_desc}{total_assets_hint}
@@ -312,20 +333,32 @@ class MultiAgentSystem:
         """
         debate_id = datetime.now().strftime("%Y%m%d%H%M%S") + f"_{stock_code}_{uuid.uuid4().hex[:6]}"
 
+        # 获取基本面数据
+        fundamental_text = ""
+        try:
+            fundamental_data = fetch_fundamental_data(stock_code)
+            fundamental_text = format_fundamental_for_prompt(fundamental_data)
+            if fundamental_text == "暂无基本面数据":
+                fundamental_text = ""
+        except Exception as e:
+            logger.warning(f"获取 {stock_code} 基本面数据失败: {e}")
+
         if self.use_mock:
             return await self._mock_debate(
                 debate_id, stock_code, stock_name, current_price,
-                price_history, cash, position_qty, position_avg_cost
+                price_history, cash, position_qty, position_avg_cost,
+                fundamental_text
             )
 
         # ── 阶段1：4个分析师并行分析 ──
-        analyst_roles = [AgentRole.BULL, AgentRole.BEAR, AgentRole.TECH, AgentRole.RISK]
+        analyst_roles = [AgentRole.BULL, AgentRole.BEAR, AgentRole.FUNDAMENTAL, AgentRole.RISK]
         tasks = []
         for role in analyst_roles:
             agent = self.agents[role]
             prompt = agent.build_analyst_prompt(
                 stock_code, stock_name, current_price, price_history,
-                cash, position_qty, position_avg_cost
+                cash, position_qty, position_avg_cost,
+                fundamental_text=fundamental_text,
             )
             tasks.append(self._call_agent(agent, prompt, current_price, cash, position_qty))
 
@@ -488,13 +521,14 @@ class MultiAgentSystem:
         cash: float,
         position_qty: int,
         position_avg_cost: float,
+        fundamental_text: str = "",
     ) -> Dict:
         """模拟多智能体辩论"""
         if len(price_history) < 3:
             opinions = [
                 {"agent_name": "bull", "role_cn": "多头分析师", "action": "HOLD", "quantity": 0, "confidence": 0.3, "reasoning": "数据不足，暂不买入"},
                 {"agent_name": "bear", "role_cn": "空头分析师", "action": "HOLD", "quantity": 0, "confidence": 0.4, "reasoning": "数据不足，风险不明"},
-                {"agent_name": "tech", "role_cn": "技术分析师", "action": "HOLD", "quantity": 0, "confidence": 0.3, "reasoning": "数据不足，无法分析"},
+                {"agent_name": "fundamental", "role_cn": "基本面分析师", "action": "HOLD", "quantity": 0, "confidence": 0.3, "reasoning": "数据不足，无法分析"},
                 {"agent_name": "risk", "role_cn": "风控经理", "action": "HOLD", "quantity": 0, "confidence": 0.5, "reasoning": "数据不足，保守观望"},
             ]
             final = {"agent_name": "moderator", "role_cn": "决策主席", "action": "HOLD", "quantity": 0, "confidence": 0.3, "reasoning": "数据不足，全部观望"}
@@ -511,6 +545,44 @@ class MultiAgentSystem:
         position_value = position_qty * current_price
         total_assets = cash + position_value
         position_ratio = position_value / total_assets * 100 if total_assets > 0 else 0
+
+        # 解析基本面数据中的关键指标用于Mock逻辑
+        has_fundamental = bool(fundamental_text)
+        main_net_positive = "净流入" in fundamental_text and "主力合计净流入" in fundamental_text
+        score_high = False
+        roe_positive = False
+        profit_growing = False
+
+        if has_fundamental:
+            # 简易解析基本面文本
+            if "评分:" in fundamental_text:
+                try:
+                    score_part = fundamental_text.split("评分:")[1].split("/")[0].strip()
+                    score_val = float(score_part)
+                    score_high = score_val >= 70
+                except (ValueError, IndexError):
+                    pass
+            if "净利润同比:" in fundamental_text:
+                # 检查最近一期是否有增长
+                for line in fundamental_text.split("\n"):
+                    if "净利润同比:" in line and "%" in line:
+                        val = line.split("净利润同比:")[1].strip().rstrip("%")
+                        try:
+                            if float(val) > 0:
+                                profit_growing = True
+                                break
+                        except ValueError:
+                            pass
+            if "ROE:" in fundamental_text:
+                for line in fundamental_text.split("\n"):
+                    if "ROE:" in line and "%" in line:
+                        val = line.split("ROE:")[1].strip().rstrip("%")
+                        try:
+                            if float(val) > 10:
+                                roe_positive = True
+                                break
+                        except ValueError:
+                            pass
 
         # ── 多头分析师 ──
         if avg_change < -1.5 and cash >= current_price * 100:
@@ -534,15 +606,77 @@ class MultiAgentSystem:
         else:
             bear = {"agent_name": "bear", "role_cn": "空头分析师", "action": "HOLD", "quantity": 0, "confidence": 0.4, "reasoning": "未发现明显卖出信号"}
 
-        # ── 技术分析师 ──
-        if volatility > 3:
-            tech = {"agent_name": "tech", "role_cn": "技术分析师", "action": "HOLD", "quantity": 0, "confidence": 0.6, "reasoning": f"波动率{volatility:.1f}%偏高，建议观望"}
-        elif price_trend > 1 and avg_change > 0:
-            tech = {"agent_name": "tech", "role_cn": "技术分析师", "action": "BUY", "quantity": 100, "confidence": 0.55, "reasoning": f"上升趋势{price_trend:.1f}%，趋势延续"}
-        elif price_trend < -1 and avg_change < 0:
-            tech = {"agent_name": "tech", "role_cn": "技术分析师", "action": "SELL", "quantity": min(position_qty, 100), "confidence": 0.55, "reasoning": f"下降趋势{price_trend:.1f}%，趋势延续"}
+        # ── 基本面分析师 ──
+        fund_action = "HOLD"
+        fund_qty = 0
+        fund_conf = 0.5
+        fund_reason = "基本面中性，暂无明确信号"
+
+        if has_fundamental:
+            bullish_signals = 0
+            bearish_signals = 0
+
+            if profit_growing:
+                bullish_signals += 1
+            else:
+                bearish_signals += 1
+
+            if roe_positive:
+                bullish_signals += 1
+
+            if main_net_positive:
+                bullish_signals += 1
+            else:
+                bearish_signals += 1
+
+            if score_high:
+                bullish_signals += 1
+            else:
+                bearish_signals += 1
+
+            if bullish_signals > bearish_signals + 1:
+                fund_action = "BUY"
+                fund_qty = int(cash / current_price / 100) * 100 if cash >= current_price * 100 else 0
+                fund_qty = max(100, min(fund_qty, 300)) if fund_qty >= 100 else 0
+                if fund_qty < 100:
+                    fund_action = "HOLD"
+                    fund_qty = 0
+                fund_conf = 0.6 + bullish_signals * 0.05
+                fund_reason = f"基本面偏多(利多{bullish_signals}项)，盈利{'增长' if profit_growing else '平稳'}，{'资金流入' if main_net_positive else '资金中性'}"
+            elif bearish_signals > bullish_signals + 1:
+                fund_action = "SELL"
+                fund_qty = min(position_qty, 100) if position_qty > 0 else 0
+                if fund_qty <= 0:
+                    fund_action = "HOLD"
+                    fund_qty = 0
+                fund_conf = 0.6 + bearish_signals * 0.05
+                fund_reason = f"基本面偏空(利空{bearish_signals}项)，盈利{'下滑' if not profit_growing else '增长但资金流出'}，{'资金流出' if not main_net_positive else '资金中性'}"
+            else:
+                fund_conf = 0.5
+                fund_reason = f"基本面中性(多{bullish_signals}/空{bearish_signals})，无明显方向"
         else:
-            tech = {"agent_name": "tech", "role_cn": "技术分析师", "action": "HOLD", "quantity": 0, "confidence": 0.5, "reasoning": "趋势不明，技术面中性"}
+            fund_reason = "无基本面数据，基于技术面判断"
+            # 回退到简单的技术分析
+            if volatility > 3:
+                fund_reason = "无基本面数据，波动率偏高，建议观望"
+            elif price_trend > 1 and avg_change > 0:
+                fund_action = "BUY"
+                fund_qty = min(100, int(cash / current_price / 100) * 100) if cash >= current_price * 100 else 0
+                if fund_qty < 100:
+                    fund_action = "HOLD"
+                    fund_qty = 0
+                fund_conf = 0.45
+                fund_reason = "无基本面数据，价格趋势向上"
+            elif price_trend < -1 and avg_change < 0:
+                fund_action = "SELL"
+                fund_qty = min(position_qty, 100) if position_qty > 0 else 0
+                if fund_qty <= 0:
+                    fund_action = "HOLD"
+                    fund_qty = 0
+                fund_conf = 0.45
+                fund_reason = "无基本面数据，价格趋势向下"
+
+        fund = {"agent_name": "fundamental", "role_cn": "基本面分析师", "action": fund_action, "quantity": fund_qty, "confidence": min(fund_conf, 0.9), "reasoning": fund_reason}
 
         # ── 风控经理 ──
         risk_action = "HOLD"
@@ -575,7 +709,7 @@ class MultiAgentSystem:
 
         risk = {"agent_name": "risk", "role_cn": "风控经理", "action": risk_action, "quantity": risk_qty, "confidence": risk_conf, "reasoning": risk_reason}
 
-        opinions = [bull, bear, tech, risk]
+        opinions = [bull, bear, fund, risk]
 
         # ── 主席裁决（模拟）──
         final = self._fallback_decision(opinions, current_price, cash, position_qty)

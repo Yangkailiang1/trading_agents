@@ -8,7 +8,7 @@ interface Props {
 const AGENT_META: Record<string, { label: string; color: string; icon: string }> = {
   bull: { label: '多头分析师', color: '#4CAF50', icon: '🐂' },
   bear: { label: '空头分析师', color: '#F44336', icon: '🐻' },
-  tech: { label: '技术分析师', color: '#2196F3', icon: '📊' },
+  fundamental: { label: '基本面分析师', color: '#2196F3', icon: '📋' },
   risk: { label: '风控经理', color: '#FF9800', icon: '🛡️' },
   moderator: { label: '决策主席', color: '#9C27B0', icon: '⚖️' },
 }

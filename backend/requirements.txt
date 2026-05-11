@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+httpx
+sqlalchemy
+pydantic
+python-dotenv
+akshare
+websockets
+pandas
+numpy

@@ -1,157 +1,195 @@
-# 基于LangChain的股票交易Agent系统
+# A股多智能体量化交易系统
 
-## 系统概述
+基于 DeepSeek AI 的多智能体辩论交易决策系统。5个AI智能体从不同视角分析股票，通过辩论达成最终交易决策，前端实时展示辩论过程和投资组合。
 
-这是一个基于LangChain和DeepSeek模型的智能股票交易系统，能够：
-- 从akshare获取实时股票数据
-- 监控股票价格波动，超过阈值时触发AI决策
-- 使用DeepSeek模型进行交易决策分析
-- 提供Web界面查看实时股价和AI决策
+## 系统架构
 
-## 已完成功能（第一阶段）
+### 多智能体辩论决策
 
-1. **Python环境**：虚拟环境已设置，所有依赖已安装
-2. **数据库**：MySQL数据库连接，表结构已创建
-3. **数据获取**：使用akshare获取A股实时数据
-4. **FastAPI后端**：完整的REST API和WebSocket支持
-5. **交易Agent**：DeepSeek集成（支持模拟模式）
-6. **监控系统**：价格波动监控框架
+```
+┌─────────────────────────────────────────────┐
+│              阶段1：并行分析（4个API调用）       │
+│                                               │
+│  🐂 多头分析师    🐻 空头分析师                 │
+│  寻找买入机会     发现风险信号                  │
+│                                               │
+│  📋 基本面分析师  🛡️ 风控经理                   │
+│  财务+资金面分析  仓位+止损控制                 │
+└──────────────┬──────────────────────────────┘
+               │ 4份意见汇总
+               ▼
+┌─────────────────────────┐
+│  阶段2：主席裁决（1个API调用）│
+│  ⚖️ 决策主席              │
+│  - 置信度加权投票          │
+│  - 风控否决权优先          │
+│  - 输出最终 BUY/SELL/HOLD │
+└─────────────────────────┘
+```
+
+| 智能体 | 角色 | 数据来源 |
+|--------|------|----------|
+| 多头分析师 | 看多视角，寻找买入机会 | 价格走势 + 基本面简要 |
+| 空头分析师 | 看空视角，发现风险信号 | 价格走势 + 基本面简要 |
+| 基本面分析师 | 客观分析公司财务和资金面 | 价格走势 + **完整基本面数据** |
+| 风控经理 | 仓位管理、止损止盈 | 价格走势 + 账户状态 |
+| 决策主席 | 综合裁决，加权投票 | 4位分析师意见 |
+
+### 基本面数据（akshare）
+
+基本面分析师通过 akshare 获取以下数据（无需额外 API key）：
+
+- **公司基本信息**：行业、市值、股本（`stock_individual_info_em`）
+- **财务摘要**：净利润、营收、ROE、EPS、资产负债率等，最近2期（`stock_financial_abstract_ths`）
+- **资金流向**：主力/超大单/大单净流入，近5日（`stock_individual_fund_flow`）
+- **综合评分**：东方财富综合评分趋势（`stock_comment_detail_zhpj_lspf_em`）
 
 ## 快速开始
 
-### 1. 启动系统
+### 1. 安装依赖
 
 ```bash
-# 给启动脚本执行权限
-chmod +x start.sh
+# 后端
+cd backend && python -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
 
-# 启动系统
-./start.sh
+# 前端
+cd frontend && npm install
 ```
 
-### 2. 访问系统
+### 2. 配置
 
-- **API文档**: http://localhost:8000/docs
-- **实时监控**: http://localhost:8000/test (WebSocket测试页面)
-- **健康检查**: http://localhost:8000/health
+在项目根目录创建 `.env` 文件：
 
-### 3. 基本API使用示例
-
-#### 添加监控股票
 ```bash
-curl -X POST "http://localhost:8000/api/stocks" \
-  -H "Content-Type: application/json" \
-  -d '{"stock_code": "000001", "stock_name": "平安银行", "threshold": 2.0}'
-```
-
-#### 获取监控股票列表
-```bash
-curl "http://localhost:8000/api/stocks"
-```
-
-#### 获取股票实时数据
-```bash
-curl "http://localhost:8000/api/stocks/000001/realtime"
-```
-
-#### 触发交易决策
-```bash
-curl -X POST "http://localhost:8000/api/stocks/000001/trigger_decision"
-```
-
-## API端点
-
-### 股票监控管理
-- `POST /api/stocks` - 添加监控股票
-- `GET /api/stocks` - 获取监控股票列表
-- `GET /api/stocks/{code}` - 获取单个股票信息
-- `PUT /api/stocks/{code}` - 更新股票配置
-- `DELETE /api/stocks/{code}` - 删除监控股票
-
-### 股票数据查询
-- `GET /api/stocks/{code}/data` - 获取历史数据
-- `GET /api/stocks/{code}/realtime` - 获取实时数据
-
-### 交易决策管理
-- `GET /api/stocks/{code}/decisions` - 获取决策历史
-- `POST /api/stocks/{code}/trigger_decision` - 手动触发决策
-
-### WebSocket实时数据
-10;  - `WS /ws/stocks/{code}` - 订阅股票实时数据
-
-## 配置
-
-### 环境变量
-编辑 `.env` 文件：
-```bash
-# 数据库配置
-HOST=127.0.0.1
-DB_USER=root
-MYSQL_PW=your_password
-DB_NAME=telco_db
-PORT=3306
-
-# DeepSeek API密钥（可选）
+# DeepSeek API密钥（可选，不配置则使用模拟决策）
 DEEPSEEK_API_KEY=your_deepseek_api_key
 ```
 
-### DeepSeek配置
-如需使用真实的DeepSeek模型分析，请：
-1. 获取DeepSeek API密钥：https://platform.deepseek.com/
-2. 添加到 `.env` 文件：`DEEPSEEK_API_KEY=your_key`
-3. 系统将自动使用DeepSeek API进行分析
+### 3. 启动
+
+```bash
+# 快速启动（后端 + 前端构建）
+./start.sh
+
+# 或分别启动：
+# 后端
+cd backend && source venv/bin/activate
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+# 前端（开发模式，支持热更新）
+cd frontend && npm run dev
+```
+
+### 4. 访问
+
+- **前端界面**: http://localhost:3000（开发模式）或 http://localhost:8000（生产模式）
+- **API文档**: http://localhost:8000/docs
+- **健康检查**: http://localhost:8000/health
+
+## 前端界面
+
+React + TypeScript + Vite + Recharts 暗色主题仪表盘：
+
+- **AccountPanel** — 账户概览：现金、持仓市值、总资产、盈亏、持仓表格（含 T+1 可卖数量）
+- **PortfolioChart** — 资产曲线：总资产/现金/持仓市值随时间变化
+- **StockList** — 监控股票列表，实时价格
+- **PriceChart** — 选中股票的价格历史图表
+- **DecisionList** — AI 决策记录，含投票条和各智能体意见标签
+- **DebatePanel** — 多智能体辩论详情，可展开查看每个智能体的意见和主席裁决
+
+## API 端点
+
+### 股票管理
+- `POST /api/stocks` — 添加监控股票
+- `GET /api/stocks` — 获取监控列表
+- `DELETE /api/stocks/{code}` — 删除监控股票
+
+### 行情数据
+- `GET /api/stocks/{code}/prices` — 价格历史
+- `GET /api/stocks/{code}/realtime` — 实时行情
+
+### 交易决策
+- `GET /api/decisions` — 决策历史（含各智能体意见）
+
+### 多智能体辩论
+- `GET /api/debates` — 辩论历史列表
+- `GET /api/debates/{debate_id}` — 单次辩论详情
+
+### 资金与持仓
+- `GET /api/portfolio` — 账户摘要
+- `POST /api/portfolio/reset` — 重置账户
+- `GET /api/portfolio/snapshots` — 资产快照曲线
+
+### WebSocket
+- `WS /ws` — 实时推送（prices / decision / account）
+
+## 数据流
+
+```
+1. scheduler tick（交易时间30s / 非交易时间5min）
+2. data_fetcher → akshare → 批量获取实时价格
+3. 保存 StockPrice 到 SQLite
+4. multi_agent.debate() → 获取基本面数据 → 4个分析师并行分析 → 主席裁决
+5. portfolio.execute_buy/sell() → 执行交易（T+1、最低100股）
+6. 保存 TradingDecision + AgentOpinion 到数据库
+7. WebSocket 广播到前端
+```
+
+## 交易规则
+
+- A股最低买入100股（1手），卖出必须是100的整数倍
+- T+1 结算：今天买入的股票今天不能卖出
+- 禁止透支和卖空
+- 单次买入不超过可用现金的30%
+- 单只股票持仓不超过总资产40%
+- 可用现金不低于总资产20%
+- 亏损超8%触发止损，盈利超20%部分止盈
 
 ## 项目结构
 
 ```
 my_trading_agent/
-├── backend/              # 后端代码
-│   ├── main.py          # FastAPI应用入口
-│   ├── api.py           # API路由定义
-│   ├── data_fetcher.py  # 股票数据获取
-│   ├── trading_agent.py # 交易决策Agent
-│   ├── monitor.py       # 价格监控器
-│   ├── database.py      # 数据库连接
-│   ├── models.py        # 数据模型
-│   ├── schemas.py       # Pydantic模型
-│   └── requirements.txt # Python依赖
-├── frontend/            # 前端代码（待开发）
-├── .env                 # 环境变量配置
-├── start.sh             # 启动脚本
-└── README.md           # 项目说明
+├── backend/
+│   ├── main.py                # FastAPI 入口，WebSocket 广播
+│   ├── api.py                 # REST API 路由
+│   ├── scheduler.py           # 定时调度器（交易/非交易时间）
+│   ├── multi_agent.py         # 多智能体辩论系统（5个Agent）
+│   ├── fundamental_fetcher.py # 基本面数据获取（akshare）
+│   ├── trading_agent.py       # 单智能体（已弃用，保留兼容）
+│   ├── portfolio.py           # 投资组合管理（买卖执行、T+1）
+│   ├── data_fetcher.py        # 行情数据获取（akshare）
+│   ├── models.py              # SQLAlchemy ORM 模型
+│   ├── database.py            # SQLite 数据库 + 迁移
+│   └── requirements.txt       # Python 依赖
+├── frontend/
+│   ├── src/
+│   │   ├── App.tsx            # 主布局
+│   │   ├── types.ts           # TypeScript 类型定义
+│   │   ├── components/
+│   │   │   ├── AccountPanel.tsx
+│   │   │   ├── PortfolioChart.tsx
+│   │   │   ├── StockList.tsx
+│   │   │   ├── PriceChart.tsx
+│   │   │   ├── DecisionList.tsx    # 决策列表（含投票条）
+│   │   │   ├── DebatePanel.tsx     # 辩论详情面板
+│   │   │   ├── AddStockForm.tsx
+│   │   │   └── Header.tsx
+│   │   └── hooks/
+│   │       └── useWebSocket.ts
+│   └── ...config files
+├── .env                       # 环境变量
+├── start.sh                   # 启动脚本
+├── CLAUDE.md                  # Claude Code 指引
+└── README.md
 ```
 
-## 下一步开发计划
+## 成本说明
 
-### 第二阶段：核心功能完善
-1. 完善交易Agent决策逻辑
-2. 优化价格监控算法
-3. 添加数据分析和可视化
-4. 实现电子邮件/短信通知
+- **真实 AI 模式**：每只股票每 tick 调用 5 次 DeepSeek API（4个分析师并行 + 1个主席串行）
+- **Mock 模式**：零 API 调用，各智能体使用规则逻辑模拟
+- 未配置 `DEEPSEEK_API_KEY` 时自动进入 Mock 模式
 
-### 第三阶段：前端界面开发
-1. React + TypeScript前端
-2. 实时股票图表
-3. 交易决策展示面板
-4. 用户配置界面
+## 免责声明
 
-### 第四阶段：高级功能
-1. 多用户支持
-2. 多种交易策略
-3. 历史回测系统
-4. 风险管理模块
-
-## 注意事项
-
-1. **数据源**：使用akshare获取A股数据，可能受网络和API限制
-2. **交易决策**：系统提供决策建议，不构成投资建议
-3. **实时性**：数据更新间隔可配置，默认30秒
-4. **数据库**：需要MySQL服务器运行，配置在`.env`中
-
-## 技术支持
-
-如有问题，请检查：
-1. MySQL服务器是否运行
-2. 数据库配置是否正确
-3. 网络连接是否正常
-4. 查看服务器日志获取详细信息
+本系统仅供学习和研究用途，交易决策由 AI 生成，**不构成任何投资建议**。股市有风险，投资需谨慎。
